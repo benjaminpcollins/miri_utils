@@ -24,7 +24,6 @@ dependencies = [
     "photutils",
     "scipy",
     "pandas",
-    "pickle",
 ]
 
 [tool.setuptools.packages.find]
