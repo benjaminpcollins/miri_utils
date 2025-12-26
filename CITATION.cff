@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Collins"
+  given-names: "Benjamin P."
+  affiliation: "Dipartimento di Fisica e Astronomia, Università di Bologna, Bologna, Italy"
+  # orcid: "https://orcid.org/0009-0005-9328-6283"
+title: "miri_utils: A Python library for JWST/MIRI photometry"
+version: 1.0.0
+# doi: 10.5281/zenodo.XXXXXXX  # You will get this from Zenodo after your first release
+date-released: 2025-12-26
+url: "https://github.com/benjaminpcollins/miri_utils"
+repository-code: "https://github.com/benjaminpcollins/miri_utils"
+keywords:
+  - "astronomy"
+  - "JWST"
+  - "MIRI"
+  - "photometry"
+license: BSD-3-Clause
