@@ -266,7 +266,7 @@ def produce_cutouts(cat, indir, output_dir, survey, x_arcsec, filter, nan_thresh
                     
                     # Draw North/East compass
                     ax = plt.gca()
-                    draw_NE_cross(ax, angle_deg=angle, size=50, offset=20)
+                    draw_NE_cross(ax, angle_deg=angle, size_pct=0.1)
                     
                     png_filename = os.path.join(output_dir, f"{ids[i]}_{filter}_cutout_{survey_name}{obs}{suffix}.png")
                     plt.savefig(png_filename)
@@ -281,52 +281,61 @@ def produce_cutouts(cat, indir, output_dir, survey, x_arcsec, filter, nan_thresh
     print(f"Produced cutouts for {counts} of {total} galaxies in the catalogue.")
 
 
-def draw_NE_cross(ax, angle_deg, size=40, offset=10, colour="white", lw=2):
+def draw_NE_cross(ax, angle_deg, size_pct=0.1, offset_pct=0.25, colour="white", lw=1.5):
     """
     Draw a North-East direction cross in the top-right corner of an image.
-
+    
     Parameters
     ----------
-    ax : matplotlib.axes.Axes
-        Axis on which to draw.
-    angle_deg : float
-        Rotation of the image relative to North (in degrees).
-    size : float
-        Length of the N/E arrows (pixels).
-    offset : float
-        Distance from the border (pixels).
-    colour : str
-        Colour of the lines/text.
-    lw : float
-        Line width.
+    size_pct : float
+        Arrow length as a fraction of the cutout width (e.g., 0.15 = 15%).
+    offset_pct : float
+        Padding from the top-right corner as a fraction of the cutout width.
     """
+    # 1. Get current axis limits (cutout size)
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    width = abs(x_max - x_min)
+    
+    # 2. Scale size and offset relative to the actual cutout dimensions
+    size = width * size_pct
+    offset = width * offset_pct
 
-    angle = np.deg2rad(angle_deg)
-    east_angle = angle + np.pi/2
-
-    # Get image dimensions from axis limits
-    x_max = ax.get_xlim()[1]
-    y_max = ax.get_ylim()[1]
-
-    # Origin of the compass (top-right corner, moved inward by offset)
+    # 3. Set Origin (Top-Right, pushed INWARD)
+    # We subtract the offset so it doesn't overlap the border
     x0 = x_max - offset
     y0 = y_max - offset
 
-    # North arrow endpoint
-    xN = x0 + size * np.sin(angle)     # sin(angle) because image coords increase upward
-    yN = y0 + size * np.cos(angle)
+    # 4. Math for Vectors
+    # Note: DS9 North usually points towards higher Dec.
+    # angle_deg should be the angle of North relative to the +Y axis.
+    angle_rad = np.deg2rad(angle_deg)
+    
+    # North vector: sin/cos based on angle from Y-axis
+    # We subtract the components because the origin is at the top-right; 
+    # to stay inside the box, the vectors generally need to point 'down' or 'left'
+    # but the math handles this if we just use the angle correctly.
+    xN = x0 + size * np.sin(angle_rad)
+    yN = y0 + size * np.cos(angle_rad)
 
-    # East arrow endpoint (90° CCW)
-    xE = x0 + size * np.sin(east_angle)
-    yE = y0 + size * np.cos(east_angle)
+    # East is typically +90 degrees from North in the coordinate system
+    # but in most FITS images, East is LEFT when North is UP.
+    east_angle_rad = angle_rad + np.pi/2
+    xE = x0 - size * np.sin(east_angle_rad)
+    yE = y0 - size * np.cos(east_angle_rad)
 
-    # Draw arrows
-    ax.plot([x0, xN], [y0, yN], colour, lw=lw)
-    ax.plot([x0, xE], [y0, yE], colour, lw=lw)
+    # 5. Draw the lines
+    ax.plot([x0, xN], [y0, yN], color=colour, lw=lw, solid_capstyle='round')
+    ax.plot([x0, xE], [y0, yE], color=colour, lw=lw, solid_capstyle='round')
 
-    # Labels
-    ax.text(xN, yN, "N", color=colour, fontsize=12, ha="center", va="center")
-    ax.text(xE, yE, "E", color=colour, fontsize=12, ha="center", va="center")
+    # 6. Labels with slight padding so they don't touch the lines
+    ax.text(xN + (size*0.2 * np.sin(angle_rad)), 
+            yN + (size*0.2 * np.cos(angle_rad)), 
+            "N", color=colour, fontsize=10, ha="center", va="center", fontweight='bold')
+    
+    ax.text(xE - (size*0.2 * np.sin(east_angle_rad)), 
+            yE - (size*0.2 * np.cos(east_angle_rad)), 
+            "E", color=colour, fontsize=10, ha="center", va="center", fontweight='bold')
 
 
 
