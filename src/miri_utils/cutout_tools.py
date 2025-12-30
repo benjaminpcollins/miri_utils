@@ -255,7 +255,7 @@ def produce_cutouts(cat, indir, survey, x_arcsec, filter, nan_thresh=0.4, png=Fa
                     output_dir = os.path.join("/Users/benjamincollins/University/Master/Red_Cardinal/", f"cutouts_{survey_name}")
                     os.makedirs(output_dir, exist_ok=True)
                     
-                    if preview:
+                    if png:
                         plt.figure(figsize=(6, 6))      
 
                         interval = ZScaleInterval()
@@ -271,7 +271,7 @@ def produce_cutouts(cat, indir, survey, x_arcsec, filter, nan_thresh=0.4, png=Fa
                         png_dir = os.path.join(output_dir, "png")
                         os.makedirs(png_dir, exist_ok=True)
                         
-                        png_filename = os.path.join(png_dir, f"{ids[i]}_{filter_l}.png")
+                        png_filename = os.path.join(png_dir, f"{ids[i]}_{filter_l}_{survey}.png")
                         plt.savefig(png_filename)
                         plt.close()
 
@@ -280,7 +280,7 @@ def produce_cutouts(cat, indir, survey, x_arcsec, filter, nan_thresh=0.4, png=Fa
                     os.makedirs(fits_dir, exist_ok=True)
                     
                     # Save multi-extension FITS cutout
-                    fits_filename = os.path.join(fits_dir, f"{ids[i]}_{filter_l}.fits")
+                    fits_filename = os.path.join(fits_dir, f"{ids[i]}_{filter_l}_{survey}.fits")
                     cutout_hdul.writeto(fits_filename, overwrite=True)
                     counts += 1
                     
