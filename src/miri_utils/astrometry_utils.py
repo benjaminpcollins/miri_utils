@@ -219,11 +219,53 @@ def compute_offset(cat, survey, filter, output_base, miri_template, nircam_templ
             'dra_arcsec': dra.to(u.arcsec).value,
             'ddec_arcsec': ddec.to(u.arcsec).value
         })
-        
+    
+    if offset_results:
         # 3. Create a fresh DataFrame and save to CSV
         df_offsets = pd.DataFrame(offset_results)
-        csv_path = os.path.join(output_base, f"{survey}/{survey}_offsets.csv")
+        csv_path = os.path.join(output_base, f"{survey}/{survey}_{filter}_offsets.csv")
         df_offsets.to_csv(csv_path, index=False)
+            
+        # 4. Create empty survey flag sheet if it doesn't exist
+        generate_flag_sheet(survey_dir, survey, filter)
+    else:
+        print("No offsets were computed; no output CSV generated.")
+    
+
+def generate_flag_sheet(survey_dir, survey, filter):
+    """Creates a blank flagging CSV if one doesn't exist."""
+    offset_csv = os.path.join(survey_dir, f"{survey}_{filter}_offsets.csv")
+    flag_csv = os.path.join(survey_dir, f"{survey}_{filter}_flags.csv")
+    
+    # 1. Define the header instructions
+    instructions = [
+        "# ASTROMETRY QUALITY CONTROL SHEET",
+        f"# Survey: {survey} | Filter: {filter}",
+        "# --------------------------------------------------",
+        "# INSTRUCTIONS:",
+        "# 1. Review the diagnostic plots in the 'diagnostic_plots' folder.",
+        "# 2. In the 'use' column: Set to 1 for GOOD, 0 for BAD (outliers/contamination).",
+        "# 3. Use the 'notes' column to document why a source was excluded.",
+        "# 4. SAVE THIS FILE AS A CSV. Do not change column names.",
+        "# --------------------------------------------------\n\n"
+    ]
+    
+    if os.path.exists(offset_csv) and not os.path.exists(flag_csv):
+        df = pd.read_csv(offset_csv)
+        # Create a new dataframe with just ID and a 'use' column (1 = Good, 0 = Bad)
+        flag_df = df[['galaxy_id']].copy()
+        
+        flag_df['use'] = 1  # Default everything to 'good'
+        flag_df['notes'] = "" # Space for your manual comments
+        
+        flag_df.to_csv(flag_csv, index=False)
+        print(f"Flag sheet created: {flag_csv}")
+        
+        # Write instructions first, then the data
+        with open(flag_csv, 'w') as f:
+            f.write("\n".join(instructions))
+            flag_df.to_csv(f, index=False)
+        print(f"Flag sheet created with instructions: {flag_csv}")
 
 
 
