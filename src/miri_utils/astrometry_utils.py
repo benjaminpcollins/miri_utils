@@ -50,6 +50,7 @@ import os
 import json
 import warnings
 import pandas as pd
+from pathlib import Path
 
 from astropy.io import fits
 from matplotlib import pyplot as plt
@@ -59,7 +60,6 @@ import astropy.units as u
 from astropy.nddata import Cutout2D
 from photutils import centroids
 from .cutout_tools import load_cutout
-from matplotlib.patches import Circle
 
 # Suppress common WCS-related warnings that don't affect functionality
 warnings.simplefilter("ignore", category=FITSFixedWarning)
@@ -136,30 +136,41 @@ def save_alignment_figure(g, cutout_nircam, cutout_miri, centroid_nircam, centro
     expected_position_pix = cutout_miri.wcs.world_to_pixel(centroid_nircam)
     axs[1].plot(expected_position_pix[0], expected_position_pix[1], 'x', color='red')
 
-    output_path = os.path.join(output_dir, f"{g['id']}_{filter}.png")
+    output_path = os.path.join(output_dir, f"{g['id']}.png")
     os.makedirs(output_dir, exist_ok=True)
     fig.savefig(output_path)
     plt.close()
     
     
 
-def compute_offset(cat, survey, filter, output_base, miri_template, nircam_template, save_fig=True, smooth_miri=True):
+def compute_offset(cat, survey, filter_name, output_base, miri_template, nircam_template, save_fig=True, smooth_miri=True):
     """Computes the astrometric offset between NIRCam and MIRI for each galaxy."""
     
-    # Create organizational folders
-    survey_dir = os.path.join(output_base, survey)
-    plot_dir = os.path.join(survey_dir, "diagnostic_plots")
-    os.makedirs(plot_dir, exist_ok=True)
+    # 1. Convert output_base to a Path object for easier handling
+    base_path = Path(output_base)
     
-    # Extract survey name and observation number from the survey parameter
+    # 2. Extract survey name and observation number
     if survey[-1].isdigit():
-        survey_name = survey[:-1]  # "primer"
-        obs = survey[-1]           # "1"
+        survey_name = survey[:-1]  # e.g., "primer"
+        obs = survey[-1]           # e.g., "1"
     else:
         survey_name = survey
         obs = ''
     
-    filter_l = filter.lower()
+    filter_l = filter_name.lower()
+
+    # 3. Define the new Hierarchical Structure: base/survey/filter/
+    # This creates a specific folder for the survey AND the filter
+    work_dir = base_path / survey / filter_name
+    plot_dir = work_dir / "diagnostic_plots"
+    
+    # Create all directories at once (parents=True creates survey and filter folders)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. Define the CSV paths for later use
+    csv_path = work_dir / f"{survey}_{filter_name}_offsets.csv"
+    
+    print(f"Directory structure initialized at: {work_dir}")
     
     # 1. Initialise an empty list to store the offsets for each survey
     offset_results = []
@@ -208,7 +219,7 @@ def compute_offset(cat, survey, filter, output_base, miri_template, nircam_templ
         
         if save_fig == True:
             # Save alignment figure
-            save_alignment_figure(gal, cutout_nircam, cutout_miri, centroid_nircam, centroid_miri, plot_dir, filter)
+            save_alignment_figure(gal, cutout_nircam, cutout_miri, centroid_nircam, centroid_miri, plot_dir, filter_name)
         
         # Compute offsets
         dra, ddec = centroid_nircam.spherical_offsets_to(centroid_miri)
@@ -223,24 +234,24 @@ def compute_offset(cat, survey, filter, output_base, miri_template, nircam_templ
     if offset_results:
         # 3. Create a fresh DataFrame and save to CSV
         df_offsets = pd.DataFrame(offset_results)
-        csv_path = os.path.join(output_base, f"{survey}/{survey}_{filter}_offsets.csv")
         df_offsets.to_csv(csv_path, index=False)
             
         # 4. Create empty survey flag sheet if it doesn't exist
-        generate_flag_sheet(survey_dir, survey, filter)
+        generate_flag_sheet(work_dir, survey, filter_name)
     else:
         print("No offsets were computed; no output CSV generated.")
     
 
-def generate_flag_sheet(survey_dir, survey, filter):
+def generate_flag_sheet(work_dir, survey, filter_name):
     """Creates a blank flagging CSV if one doesn't exist."""
-    offset_csv = os.path.join(survey_dir, f"{survey}_{filter}_offsets.csv")
-    flag_csv = os.path.join(survey_dir, f"{survey}_{filter}_flags.csv")
+    
+    flag_csv = work_dir / f"{survey}_{filter_name}_flags.csv"
+    offset_csv = work_dir / f"{survey}_{filter_name}_offsets.csv"
     
     # 1. Define the header instructions
     instructions = [
         "# ASTROMETRY QUALITY CONTROL SHEET",
-        f"# Survey: {survey} | Filter: {filter}",
+        f"# Survey: {survey} | Filter: {filter_name}",
         "# --------------------------------------------------",
         "# INSTRUCTIONS:",
         "# 1. Review the diagnostic plots in the 'diagnostic_plots' folder.",
@@ -267,6 +278,69 @@ def generate_flag_sheet(survey_dir, survey, filter):
             flag_df.to_csv(f, index=False)
         print(f"Flag sheet created with instructions: {flag_csv}")
 
+
+
+def get_survey_stats(output_base, survey, filter_name):
+    """Calculates clean statistics for a single survey/filter combination."""
+    # This automatically handles the subfolder logic
+    # Path: output_base / survey / filter_name
+    base = Path(output_base)
+    folder = base / survey / filter_name
+
+    offset_path = folder / f"{survey}_{filter_name}_offsets.csv"
+    flag_path = folder / f"{survey}_{filter_name}_flags.csv"
+
+    if not Path(offset_path).exists():
+        return None
+
+    # Load offsets and flags
+    df = pd.read_csv(offset_path)
+    
+    if flag_path.exists():
+        # Read flags, ignoring your custom instructions (#)
+        flags = pd.read_csv(flag_path, comment='#')
+        df = pd.merge(df, flags[['galaxy_id', 'use']], on='galaxy_id')
+        # Only keep the ones you marked as 1 (Good)
+        df_clean = df[df['use'] == 1]
+    else:
+        df_clean = df
+
+    if df_clean.empty:
+        return None
+
+    # Compute Statistics
+    stats = {
+        'survey': survey,
+        'filter': filter_name,
+        'n_sources': len(df_clean),
+        'dra_mean': df_clean['dra_arcsec'].mean(),
+        'dra_std': df_clean['dra_arcsec'].std(),
+        'ddec_mean': df_clean['ddec_arcsec'].mean(),
+        'ddec_std': df_clean['ddec_arcsec'].std(),
+        'total_mag': np.sqrt(df_clean['dra_arcsec'].mean()**2 + df_clean['ddec_arcsec'].mean()**2)
+    }
+    return stats
+
+def generate_master_summary(output_base, survey_config):
+    """
+    survey_config: dict of {survey: [filters]}
+    Example: {"primer1": ["F770W", "F1800W"]}
+    """
+    all_stats = []
+    
+    for survey, filters in survey_config.items():
+        for filt in filters:
+                
+            res = get_survey_stats(output_base, survey, filt)
+            if res:
+                all_stats.append(res)
+
+    # Create the comparison table
+    summary_df = pd.DataFrame(all_stats)
+    
+    # Save it for your paper/thesis
+    summary_df.to_csv(Path(output_base) / "astrometry_summary.csv", index=False)
+    return summary_df
 
 
 def write_offset_stats(df, dra, ddec, output_dir, survey, filter):
