@@ -479,32 +479,39 @@ def apply_wcs_shift(input_file, dra_arcsec, ddec_arcsec, output_file=None):
         output_file (str, optional): If provided, saves a copy here. 
                                      If None, updates input_file in-place.
     """
-    # 1. Handle File Copying if necessary
     target_file = input_file
     if output_file and output_file != input_file:
         shutil.copy2(input_file, output_file)
         target_file = output_file
 
-    # 2. Open and Update
     with fits.open(target_file, mode='update') as hdul:
-        # Most JWST data has WCS in the 'SCI' extension
-        header = hdul[0].header
-        if 'CRVAL1' not in header and len(hdul) > 1:
-            header = hdul['SCI'].header
-
+        # 1. Identify the WCS header (prefer SCI extension)
+        ext = 'SCI' if 'SCI' in hdul else 0
+        header = hdul[ext].header
+        
         wcs = WCS(header)
         if not wcs.has_celestial:
             print(f"⚠️ No celestial WCS in {target_file}")
             return
 
-        # Apply shift (degrees)
-        header['CRVAL1'] -= dra_arcsec / 3600.0
-        header['CRVAL2'] -= ddec_arcsec / 3600.0
-
-        # 3. Add Metadata (Crucial for Package Users!)
-        header['HISTORY'] = f"Astrometry corrected: dRA={dra_arcsec:.4f}\", dDec={ddec_arcsec:.4f}\""
-        header['ASTRO_CORR'] = True # Custom keyword for easy filtering
+        # 2. RA Cosine Correction
+        # dra_deg = dra_arcsec / (3600 * cos(dec))
+        # Note: This is only relevant for fields close to the poles where longitudinal lines appear squished
+        dec_ref = header.get('CRVAL2', 0)
+        cos_dec = np.cos(np.deg2rad(dec_ref))
         
+        dra_deg = (dra_arcsec / 3600.0) / cos_dec
+        ddec_deg = ddec_arcsec / 3600.0
+
+        # 3. Apply shift to BOTH Primary and SCI headers if they exist
+        # This ensures tools like DS9 and Python scripts stay in sync
+        for h in [hdul[0].header, hdul[ext].header]:
+            if 'CRVAL1' in h:
+                h['CRVAL1'] -= dra_deg
+                h['CRVAL2'] -= ddec_deg
+                h['HISTORY'] = f"Astrometry corrected: dRA={dra_arcsec:.4f}\", dDec={ddec_arcsec:.4f}\""
+                h['ASTRO_COR'] = True
+
         hdul.flush() 
     
     print(f"✅ {'Updated' if not output_file else 'Created'} {target_file}")
