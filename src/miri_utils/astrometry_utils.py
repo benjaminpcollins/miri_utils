@@ -286,46 +286,46 @@ def get_survey_stats(output_base, survey, filter_name):
     # Path: output_base / survey / filter_name
     base = Path(output_base)
     folder = base / survey / filter_name
-
     offset_path = folder / f"{survey}_{filter_name}_offsets.csv"
     flag_path = folder / f"{survey}_{filter_name}_flags.csv"
 
     if not Path(offset_path).exists():
         return None
-
-    # Load offsets and flags
-    df = pd.read_csv(offset_path)
     
-    if flag_path.exists():
-        try:
-            flags = pd.read_csv(
-                flag_path, 
-                comment='#', 
-                skip_blank_lines=True,
-                on_bad_lines='warn', # This skips a broken line instead of crashing
-                quoting=3 # 3 is csv.QUOTE_NONE; prevents EOF errors from stray quotes
-            )
-            # ... merge logic ...
-        except Exception as e:
-            print(f"Warning: Could not parse {flag_path}. Error: {e}")
-            # Decide if you want to skip this survey or use all data
+    try:
+        # Load offsets and flags
+        df = pd.read_csv(offset_path)
+        
+        if flag_path.exists() and flag_path.stat().st_size > 0:
+            # We use quoting=3 to ignore stray quotes that cause ParserError
+            flags = pd.read_csv(flag_path, 
+                                comment='#', 
+                                quotechar='"',
+                                skipinitialspace=True)
+            df = pd.merge(df, flags[['galaxy_id', 'use']], on='galaxy_id')
+            df_clean = df[df['use'] == 1]
+        else:
             df_clean = df
+        
+        if df_clean.empty: return None
+        
+        # Compute Statistics
+        return {
+            'survey': survey,
+            'filter': filter_name,
+            'n_sources': len(df_clean),
+            'dra_mean': df_clean['dra_arcsec'].mean(),
+            'dra_std': df_clean['dra_arcsec'].std(),
+            'ddec_mean': df_clean['ddec_arcsec'].mean(),
+            'ddec_std': df_clean['ddec_arcsec'].std(),
+            'total_mag': np.sqrt(df_clean['dra_arcsec'].mean()**2 + df_clean['ddec_arcsec'].mean()**2)
+        }
+            
+    except Exception as e:
+        print(f"Skipping {survey}_{filter_name} due to error: {e}")
+        return None   
 
-    if df_clean.empty:
-        return None
-
-    # Compute Statistics
-    stats = {
-        'survey': survey,
-        'filter': filter_name,
-        'n_sources': len(df_clean),
-        'dra_mean': df_clean['dra_arcsec'].mean(),
-        'dra_std': df_clean['dra_arcsec'].std(),
-        'ddec_mean': df_clean['ddec_arcsec'].mean(),
-        'ddec_std': df_clean['ddec_arcsec'].std(),
-        'total_mag': np.sqrt(df_clean['dra_arcsec'].mean()**2 + df_clean['ddec_arcsec'].mean()**2)
-    }
-    return stats
+    
 
 def generate_master_summary(output_base, survey_config):
     """
@@ -347,274 +347,3 @@ def generate_master_summary(output_base, survey_config):
     # Save it for your paper/thesis
     summary_df.to_csv(Path(output_base) / "astrometry_summary.csv", index=False)
     return summary_df
-
-
-def write_offset_stats(df, dra, ddec, output_dir, survey, filter):
-    """Write mean and std of astrometric offsets to a JSON file.
-
-    Args:
-        df (pandas.DataFrame): The dataframe with 'dra' and 'ddec' columns.
-        survey (string): Name of the survey (primer or cweb)
-        obs (string): Number of the observation
-        output_dir (str): Directory where the stats file will be saved.
-        filename (str): Name of the JSON file.
-    """
-
-    # Calculate means and standard deviations
-    stats = {
-        "dra_mean": df[dra].mean(),
-        "ddec_mean": df[ddec].mean(),
-        "dra_std": df[dra].std(),
-        "ddec_std": df[ddec].std()
-    }
-
-    # Ensure the output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
-    filename = f"offset_{survey}_{filter}_stats.json"
-    # Write to JSON
-    output_path = os.path.join(output_dir, filename)
-    with open(output_path, 'w') as f:
-        json.dump(stats, f, indent=4)
-
-    print(f"Offset statistics written to {output_path}")
-
-
-
-def visualise_offsets(df, survey, output_dir, exclude_ids, filter, use_filters=False):
-    """
-    Produces three types of plots for the astrometric offsets (Scatter, Quiver, and Histogram)
-    and returns the filtered DataFrame for further analysis.
-
-    Args:
-        df (pandas DataFrame): The complete dataframe with all offsets stored.
-        survey (str): The name of the survey (primer or cweb plus observation number)
-        output_dir (str): Path to the output directory.
-        exclude_ids (list[int]): A list of galaxy IDs to be excluded from analysis.
-
-    Returns:
-        pandas DataFrame: The filtered DataFrame for further analysis.
-    """
-
-    # Ensure the output directory exists
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Exclude specific galaxy IDs
-    df = df[~df['id'].isin(exclude_ids)].copy()
-
-    # Find corresponding ddec column
-    if use_filters == True:
-        col1 = survey + f'_{filter.lower()}_dra'
-        col2 = survey + f'_{filter.lower()}_ddec'
-    else:
-        col1 = survey + '_dra'
-        col2 = survey + '_ddec'
-
-    # Remove rows where col1 is exactly 0.0
-    df_new = df[df[col1] != 0.0].copy()
-
-    # Determine survey name
-    if 'primer' in col1:
-        survey_cap = 'PRIMER' 
-    elif 'cosmos' in col1:
-        survey_cap = 'COSMOS-3D'
-    else: 
-        survey_cap = 'COSMOS-Web'
-
-    # ---- Compute Statistics ----
-    write_offset_stats(df_new, col1, col2, output_dir, survey, filter)
-    
-    # ---- Scatter Plot ----
-    plot_dir = os.path.join(output_dir, 'scatter_plots/')
-    os.makedirs(plot_dir, exist_ok=True)
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(df_new[col1], df_new[col2], s=10, alpha=0.7)
-    ax.set_xlabel('ΔRA (arcsec)')
-    ax.set_ylabel('ΔDec (arcsec)')
-    ax.set_title(f'{survey_cap} Astrometric Offset\n{filter} MIRI vs F444W NIRCam')
-
-    scatter_path = os.path.join(plot_dir, f'{survey}_offset_{filter}_scatter.png')
-    fig.savefig(scatter_path, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
-    # ---- Quiver Plot ----
-    fig, ax = plt.subplots(figsize=(6, 5))
-    
-    ax.quiver(df_new['ra'], df_new['dec'], df_new[col1], df_new[col2], angles='xy', scale_units='xy', scale=1)
-    ax.set_xlabel('RA')
-    ax.set_ylabel('Dec')
-    ax.set_title(f'{survey_cap} Astrometric Offset\n{filter} MIRI vs F444W NIRCam')
-
-    # Calculate and adjust axis limits to fit all arrows
-    ra_min, ra_max = df_new['ra'].min(), df_new['ra'].max()
-    dec_min, dec_max = df_new['dec'].min(), df_new['dec'].max()
-    arrow_max = np.sqrt(df_new[col1]**2 + df_new[col2]**2).max()
-
-    ax.set_xlim(ra_min - arrow_max, ra_max + arrow_max)
-    ax.set_ylim(dec_min - arrow_max, dec_max + arrow_max)
-
-    quiver_path = os.path.join(plot_dir, f'{survey}_offset_{filter}_arrows.png')
-    fig.savefig(quiver_path, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-
-    # ---- Histogram Plot ----
-    fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-    
-    axs[0].hist(df_new[col1], bins=15, edgecolor='black', alpha=0.7)
-    axs[0].set_title("ΔRA (arcsec)")
-    axs[0].set_xlabel("Offset (arcsec)")
-
-    axs[1].hist(df_new[col2], bins=15, edgecolor='black', alpha=0.7)
-    axs[1].set_title("ΔDec (arcsec)")
-    axs[1].set_xlabel("Offset (arcsec)")
-
-    hist_path = os.path.join(plot_dir, f'{survey}_offset_{filter}_hist.png')
-    fig.savefig(hist_path, dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    
-    # Rename columns for consistency
-    df_new = df_new.rename(columns={col1: 'dra', col2: 'ddec'})
-    
-    return df_new
-
-
-def shift_miri_fits(fits_file, dra_mean, ddec_mean):
-    """
-    Shifts the WCS of a MIRI fits file to compensate for a systematic astrometric offset.
-
-    Args:
-        fits_file (str): Path to the input MIRI fits file.
-        dra_mean (float): Mean RA offset in arcseconds.
-        ddec_mean (float): Mean Dec offset in arcseconds.
-        output_dir (str): Directory in which the corrected fits file is saved.
-
-    Returns:
-        None
-    """
-    
-    with fits.open(fits_file, mode='update') as hdul:
-        for hdu in hdul:
-            try:
-                wcs = WCS(hdu.header)
-                if wcs.has_celestial:
-                    # Apply shift in degrees
-                    hdu.header['CRVAL1'] -= dra_mean / 3600.0
-                    hdu.header['CRVAL2'] -= ddec_mean / 3600.0
-                    print(f"✅ Updated WCS in: {fits_file}")
-                    break  # Only shift first valid celestial WCS
-            except Exception:
-                continue
-        else:
-            raise RuntimeError("No celestial WCS found to update.")
-
-
-
-# Define a function to read the json files
-def get_mean_stats(filename):
-    with open(filename, "r") as f:
-        stats = json.load(f)
-    dra_mean = stats["dra_mean"]
-    ddec_mean = stats["ddec_mean"]
-    return dra_mean, ddec_mean
-
-
-def plot_offsets_polar(output_dir, output_basename, data_dict, title=None, plot_type='all'):
-    """
-    Plots astrometric offsets in polar coordinates (angle vs radial offset).
-
-    Parameters:
-    - output_dir: directory to save plots
-    - output_basename: base name (without extension) for saved figures
-    - data_dict: dictionary where keys are labels and values are DataFrames with 'dra' and 'ddec'
-    - title: title of the figure
-    - avg: if true plots average values, else single data points of the df
-    """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    rmax = 0.4
-    
-    if plot_type=='all':
-
-        # Auto-generate a colour map using matplotlib colormap
-        labels = list(data_dict.keys())
-        cmap = plt.get_cmap('tab10')  # or 'Set1', 'tab20', etc.
-        colour_map = {label: cmap(i % cmap.N) for i, label in enumerate(labels)}
-
-        fig = plt.figure(figsize=(9, 9))
-        fig.subplots_adjust(right=0.75)  # Shrinks subplot to 75% of figure width, leaves 25% empty on right
-        ax = plt.subplot(111, polar=True)
-        handles_datasets = []
-        handles_averages = []
-
-        for label, df in data_dict.items():
-            colour = colour_map[label]
-
-            dra = df['dra'].to_numpy()
-            ddec = df['ddec'].to_numpy()
-
-            r = np.sqrt(dra**2 + ddec**2)
-            theta = np.arctan2(ddec, dra)
-
-            # Choose marker shape
-            if '3D' in label:
-                marker_style = 's'  # square
-            else:
-                marker_style = 'o'  # circle
-                
-            # Scatter for dataset
-            scatter = ax.scatter(theta, r, alpha=0.5, label=label, color=colour, marker=marker_style)
-            handles_datasets.append(scatter)
-
-            # Scatter for average
-            mean_dra = np.mean(dra)
-            mean_ddec = np.mean(ddec)
-            r_avg = np.sqrt(mean_dra**2 + mean_ddec**2)
-            theta_avg = np.arctan2(mean_ddec, mean_dra)
-            avg_scatter = ax.scatter(theta_avg, r_avg, label=label+' (avg)', s=100, edgecolor='k', color=colour, marker=marker_style)
-            handles_averages.append(avg_scatter)
-            
-        if title: ax.set_title(title, va='bottom')
-        ax.set_rmax(rmax)
-        #ax.set_rticks([0.2, 0.4, 0.6])  # optional
-        ax.set_theta_zero_location("E")  # 0° = East = +RA
-        ax.set_theta_direction(-1)       # angles increase clockwise (RA leftward)
-        ax.grid(True)
-
-        all_handles = handles_datasets + handles_averages
-        all_labels = [h.get_label() for h in all_handles]
-
-        ax.legend(all_handles, all_labels, loc='upper right', bbox_to_anchor=(1.3, 1.0))
-
-        figname = os.path.join(output_dir, f"{output_basename}_polar.png")
-        plt.tight_layout()
-        plt.savefig(figname, bbox_inches='tight')
-        plt.show()
-
-    elif plot_type=='avg':
-        # Plot average offsets
-        fig = plt.figure(figsize=(8, 8))
-        ax = plt.subplot(111, polar=True)
-
-        for label, df in data_dict.items():
-            mean_dra = np.mean(df['dra'])
-            mean_ddec = np.mean(df['ddec'])
-
-            label += ' Avg'
-            r_avg = np.sqrt(mean_dra**2 + mean_ddec**2)
-            theta_avg = np.arctan2(mean_ddec, mean_dra)
-
-            ax.scatter(theta_avg, r_avg, label=label, s=100, edgecolor='k')
-
-        if title: ax.set_title(title, va='bottom')
-        ax.set_rmax(rmax)
-        #ax.set_rticks([0.2, 0.4, 0.6])
-        ax.set_theta_zero_location("E")
-        ax.set_theta_direction(-1)
-        ax.grid(True)
-        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
-
-        figname_avg = os.path.join(output_dir, f"{output_basename}_avg_polar.png")
-        plt.savefig(figname_avg, bbox_inches='tight')
-        plt.show()
