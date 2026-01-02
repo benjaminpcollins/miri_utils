@@ -481,8 +481,22 @@ def apply_wcs_shift(input_file, dra_arcsec, ddec_arcsec, output_file=None):
     """
     target_file = input_file
     if output_file and output_file != input_file:
-        shutil.copy2(input_file, output_file)
-        target_file = output_file
+        if os.path.exists(output_file):
+            target_file = output_file
+        else:
+            shutil.copy2(input_file, output_file)
+            target_file = output_file
+
+    # --- THE SAFETY CHECK ---
+    with fits.open(target_file) as hdul:
+        # Check both Primary and SCI headers for our custom flag
+        is_corrected = hdul[0].header.get('ASTRO_COR', False)
+        if not is_corrected and 'SCI' in hdul:
+            is_corrected = hdul['SCI'].header.get('ASTRO_COR', False)
+        
+        if is_corrected:
+            print(f"⏭️ Skipping {target_file}: Already corrected.")
+            return
 
     with fits.open(target_file, mode='update') as hdul:
         # 1. Identify the WCS header (prefer SCI extension)
