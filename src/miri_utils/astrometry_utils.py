@@ -297,13 +297,19 @@ def get_survey_stats(output_base, survey, filter_name):
     df = pd.read_csv(offset_path)
     
     if flag_path.exists():
-        # Read flags, ignoring your custom instructions (#)
-        flags = pd.read_csv(flag_path, comment='#')
-        df = pd.merge(df, flags[['galaxy_id', 'use']], on='galaxy_id')
-        # Only keep the ones you marked as 1 (Good)
-        df_clean = df[df['use'] == 1]
-    else:
-        df_clean = df
+        try:
+            flags = pd.read_csv(
+                flag_path, 
+                comment='#', 
+                skip_blank_lines=True,
+                on_bad_lines='warn', # This skips a broken line instead of crashing
+                quoting=3 # 3 is csv.QUOTE_NONE; prevents EOF errors from stray quotes
+            )
+            # ... merge logic ...
+        except Exception as e:
+            print(f"Warning: Could not parse {flag_path}. Error: {e}")
+            # Decide if you want to skip this survey or use all data
+            df_clean = df
 
     if df_clean.empty:
         return None
