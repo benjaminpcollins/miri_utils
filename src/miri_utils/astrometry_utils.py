@@ -51,6 +51,7 @@ import glob
 import warnings
 import pandas as pd
 from pathlib import Path
+import seaborn as sns
 
 from astropy.io import fits
 from matplotlib import pyplot as plt
@@ -357,6 +358,115 @@ def generate_master_summary(output_base, survey_config):
     # Save it for your paper/thesis
     summary_df.to_csv(Path(output_base) / "astrometry_summary.csv", index=False)
     return summary_df
+
+
+def display_offsets(output_base, summary_df):
+    """
+    Creates a multi-panel visualization of all astrometric offsets.
+    """
+    # Define this at the top of your function or as a global config
+    FILTER_MARKERS = {
+        "F770W": "o",   # Circle
+        "F1000W": "^",  # Triangle
+        "F1130W": "p",  # Pentagon
+        "F1280W": "v",  # Downward Triangle
+        "F1500W": "P",  # Thick Plus
+        "F1800W": "s",  # Square
+        "F2100W": "D",  # Diamond
+    }
+    
+    # Mapping variable names to human-readable names
+    PROGRAMME_MAP = {
+        "cos3d1": "COSMOS-3D (Obs 1)", "cos3d2": "COSMOS-3D (Obs 2)",
+        "cweb1": "COSMOS-Web (Obs 1)",  "cweb2": "COSMOS-Web (Obs 2)",
+        "primer1": "PRIMER (Obs 1)",    "primer2": "PRIMER (Obs 2)"
+    }
+
+    # Define a paired color palette: Dark for Obs 1, Light for Obs 2
+    # 'Paired' provides sets of (Light, Dark) colors
+    colors = sns.color_palette("Paired")
+    COLOUR_MAP = {
+        "COSMOS-3D (Obs 1)": colors[1], "COSMOS-3D (Obs 2)": colors[0],
+        "COSMOS-Web (Obs 1)": colors[3], "COSMOS-Web (Obs 2)": colors[2],
+        "PRIMER (Obs 1)": colors[5],    "PRIMER (Obs 2)": colors[4]
+    }
+    
+    master_data = []
+    
+    # 1. Collect all "Good" data points
+    for _, row in summary_df.iterrows():
+        folder = Path(output_base) / row['survey'] / row['filter']
+        off_path = folder / f"{row['survey']}_{row['filter']}_offsets.csv"
+        flag_path = folder / f"{row['survey']}_{row['filter']}_flags.csv"
+        
+        if off_path.exists():
+            df = pd.read_csv(off_path)
+            if flag_path.exists():
+                flags = pd.read_csv(flag_path, comment='#', sep=',')
+                df = pd.merge(df, flags, on='galaxy_id')
+                df = df[df['use'] == 1] # Only plot the ones you verified
+            
+            # Clean up labels using the maps
+            df['Programme'] = PROGRAMME_MAP.get(row['survey'], row['survey'])
+            df['Filter'] = row['filter'].upper()
+            master_data.append(df)
+
+    full_df = pd.concat(master_data)
+
+    # 2. Setup Plotting Style
+    sns.set_theme(style="whitegrid")
+    fig = plt.figure(figsize=(14, 10))
+    
+    # --- Part 1: Global Overplot (Left) ---
+    ax1 = plt.subplot2grid((2, 2), (0, 0), rowspan=1)
+    # Plot individual galaxies with lower alpha
+    scatter = sns.scatterplot(
+        data=full_df, x='dra_arcsec', y='ddec_arcsec', 
+        hue='Programme', style='Filter', markers=FILTER_MARKERS, 
+        palette=COLOUR_MAP, alpha=0.4, s=30, ax=ax1
+    )
+    
+    # 3. Plot Medians with human-readable logic
+    for prog in full_df['Programme'].unique():
+        for filt in full_df[full_df['Programme'] == prog]['Filter'].unique():
+            sub = full_df[(full_df['Programme'] == prog) & (full_df['Filter'] == filt)]
+            m_style = FILTER_MARKERS.get(filt, 'X')
+            m_color = COLOUR_MAP.get(prog, 'black')
+            
+            ax1.plot(
+                sub['dra_arcsec'].mean(), sub['ddec_arcsec'].mean(), 
+                marker=m_style, color=m_color, markersize=14, 
+                markeredgecolor='white', markeredgewidth=1.5
+            )
+
+    # Styling the main plot
+    ax1.axhline(0, color='black', linestyle='--', alpha=0.8)
+    ax1.axvline(0, color='black', linestyle='--', alpha=0.8)
+    ax1.set_title("Global Offset Distribution", fontsize=18, pad=15)
+    ax1.set_xlabel(r"$\Delta$RA [arcsec]", fontsize=14)
+    ax1.set_ylabel(r"$\Delta$Dec [arcsec]", fontsize=14)
+    ax1.set_xlim(-0.3, 0.3)
+    ax1.set_ylim(-0.3, 0.3)
+
+    # --- Part 2: Facet-like behavior (Right Top/Bottom) ---
+    # Cleanup the legend (Separate colors from shapes)
+    handles, labels = ax1.get_legend_handles_labels()
+    # Find indices for the headers in the legend to split them
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+
+    # --- Part 4: KDE Density Panels (Right) ---
+    ax2 = plt.subplot2grid((2, 2), (0, 1))
+    sns.kdeplot(data=full_df, x='dra_arcsec', hue='Programme', palette=COLOUR_MAP, ax=ax2, common_norm=False)
+    ax2.set_title("RA Offset Stability", fontsize=18, pad=15)
+
+    ax3 = plt.subplot2grid((2, 2), (1, 1))
+    sns.kdeplot(data=full_df, x='ddec_arcsec', hue='Programme', palette=COLOUR_MAP, ax=ax3, common_norm=False)
+    ax3.set_title("Dec Offset Stability", fontsize=18, pad=15)
+
+    plt.tight_layout()
+    plt.savefig(Path(output_base) / "astrometry_diagnostic_plot.png", dpi=300)
+    plt.show()
+
 
 def apply_wcs_shift(input_file, dra_arcsec, ddec_arcsec, output_file=None):
     """
