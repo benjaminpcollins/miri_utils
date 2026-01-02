@@ -1,70 +1,67 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-MIRI Utils Astrometric Offset Module
-====================================
+MIRI Utils: Astrometric Calibration & Alignment Module
+======================================================
 
-This module provides functions for computing and visualising astrometric offsets between NIRCam and MIRI cutouts, 
-which is critical for ensuring accurate positional alignment in multi-wavelength analyses. 
-The module includes tools for:
-- Computing centroids for cutouts with optional smoothing to reduce noise.
-- Saving alignment figures to visually inspect centroid matching.
-- Calculating RA/Dec offsets for entire galaxy catalogues.
-- Exporting statistical summaries of offset distributions.
-- Shifting MIRI FITS files to correct systematic positional offsets.
+A comprehensive toolkit for identifying and correcting systematic astrometric 
+offsets between JWST NIRCam (reference) and MIRI (target) imaging.
 
-Dependencies
-------------
+Key Capabilities:
+-----------------
+- Automated cross-matching of centroids between multi-wavelength cutouts.
+- Hierarchical data management (Survey/Filter structure).
+- Interactive quality control via auto-generated flagging sheets.
+- Global statistical analysis and visualisation of pointing errors.
+- High-fidelity WCS correction of Stage 3 mosaics with spherical geometry 
+  correction (RA Cosine) and idempotency checks.
+
+Module Features:
+----------------
+- compute_offset: Core loop for processing galaxy catalogues.
+- generate_flag_sheet: Creates non-destructive CSVs for manual QC.
+- display_offsets: Multi-panel visualisation of survey-wide residuals.
+- apply_wcs_shift: Spherical-aware WCS correction for FITS mosaics.
+
 Dependencies:
-- astropy (for FITS I/O, WCS transformations, and coordinate calculations)
-- matplotlib (for visualisation)
-- photutils (for centroiding)
-- scipy (for image smoothing)
-- numpy (for array manipulations)
-- json (for exporting statistics)
- 
-Requirements
-------------
-- astropy
-- numpy
-- scipy
-- pandas
-
-Usage
------
-- Ensure cat is defined with the expected structure (including 'id', 'ra', 'dec' columns).
-- Prepare offset columns by calling the prepare_cols function.
-- Call the compute_offset function to compute centroids and offsets for each galaxy in the catalogue.
-- Use save_alignment_figure for visual verification of alignment.
-- Export summary statistics with write_offset_stats.
-- Shift MIRI cutouts to correct for systematic offsets using shift_miri_fits.
+-------------
+- astropy (FITS, WCS, Units, Coordinates)
+- photutils (Centroiding algorithms)
+- pandas (Dataframe management and CSV I/O)
+- scipy (Gaussian smoothing)
+- matplotlib & seaborn (Diagnostic visualisation)
 
 Author: Benjamin P. Collins
-Date: May 15, 2025
-Version: 3.0
+Date: Dec 2025 (Updated for Version 3.1)
+Version: 3.1
 """
 
-import numpy as np
-import scipy
 import os
 import glob
+import shutil
 import warnings
-import pandas as pd
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import scipy.ndimage as ndimage
 import seaborn as sns
+from matplotlib import pyplot as plt
 
 from astropy.io import fits
-from matplotlib import pyplot as plt
-from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS, FITSFixedWarning
+from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.nddata import Cutout2D
 from photutils import centroids
+
+# Internal package imports
 from .cutout_tools import load_cutout
-import shutil
 
 # Suppress common WCS-related warnings that don't affect functionality
-warnings.simplefilter("ignore", category=FITSFixedWarning)
+warnings.simplefilter('ignore', category=FITSFixedWarning)
+
+
 
 def get_path(template, **kwargs):
     """
@@ -105,7 +102,7 @@ def compute_centroid(cutout, smooth_sigma, good_frac_cutout, smooth_miri):
 
     # Decide whether to smooth MIRI or not
     if smooth_miri == True:
-        smoothed_data = scipy.ndimage.gaussian_filter(cutout.data, smooth_sigma)
+        smoothed_data = ndimage.gaussian_filter(cutout.data, smooth_sigma)
     else: 
         smoothed_data = cutout.data
     
@@ -138,11 +135,11 @@ def save_alignment_figure(g, cutout_nircam, cutout_miri, centroid_nircam, centro
     
     fig, axs = plt.subplots(1, 2, figsize=[10, 5])
 
-    axs[0].imshow(scipy.ndimage.gaussian_filter(cutout_nircam.data, 1.0), origin='lower')
+    axs[0].imshow(ndimage.gaussian_filter(cutout_nircam.data, 1.0), origin='lower')
     axs[0].plot(*cutout_nircam.wcs.world_to_pixel(centroid_nircam), 'x', color='red')
     axs[0].set(title=f"{g['id']} - NIRCam/F444W")
 
-    axs[1].imshow(scipy.ndimage.gaussian_filter(cutout_miri.data, 1.0), origin='lower')
+    axs[1].imshow(ndimage.gaussian_filter(cutout_miri.data, 1.0), origin='lower')
     axs[1].plot(*cutout_miri.wcs.world_to_pixel(centroid_miri), 'o', color='orange')
     axs[1].set(title=f"{g['id']} - MIRI/{filter}")
     
@@ -155,10 +152,57 @@ def save_alignment_figure(g, cutout_nircam, cutout_miri, centroid_nircam, centro
     fig.savefig(output_path)
     plt.close()
     
-    
+
 
 def compute_offset(cat, survey, filter_name, output_base, miri_template, nircam_template, save_fig=True, smooth_miri=True):
-    """Computes the astrometric offset between NIRCam and MIRI for each galaxy."""
+    """
+    Computes systematic astrometric offsets between NIRCam and MIRI images for a galaxy catalog.
+
+    This function iterates through a catalogue of sources, locates corresponding 
+    NIRCam (reference) and MIRI (target) images using path templates, and 
+    calculates the RA/Dec shift. It organises results into a hierarchical 
+    directory structure: `output_base/survey/filter/`.
+
+    Parameters
+    ----------
+    cat : astropy.table.Table or pandas.DataFrame
+        A catalogue containing source coordinates and IDs. Must include 'id', 
+        'ra', and 'dec' columns.
+    survey : str
+        The name of the survey/programme (e.g., 'cos3d1', 'primer2'). This is 
+        used for directory naming and path formatting.
+    filter_name : str
+        The MIRI filter being processed (e.g. 'F770W', 'F1800W').
+    output_base : str or Path
+        The root directory where the 'astrometry/' folder structure will be 
+        initialised and results saved.
+    miri_template : str
+        An f-string compatible path template for MIRI files. 
+        Example: "data/MIRI/{survey_name}/{survey_name}_{obs}/*{filter}*_i2d.fits"
+    nircam_template : str
+        An f-string compatible path template for NIRCam reference files.
+        Example: "data/NIRCam/mosaics/*{id}*_nircam.fits"
+    save_fig : bool, default True
+        If True, saves diagnostic plots showing the alignment of centroids 
+        for each processed galaxy.
+    smooth_miri : bool, default True
+        If True, applies a Gaussian kernel to the MIRI image before 
+        centroiding to mitigate noise in faint mid-infrared sources.
+
+    Returns
+    -------
+    None
+        Results are saved to disk as:
+        1. `{survey}_{filter}_offsets.csv`: Raw calculated shifts.
+        2. `{survey}_{filter}_flags.csv`: Quality control sheet for manual review.
+        3. `diagnostic_plots/`: Folder containing PNGs for visual verification.
+
+    Notes
+    -----
+    The function uses a 'non-destructive' approach. If a flagging file 
+    already exists, it will not be overwritten, allowing for iterative 
+    updates to the offset calculations without losing manual annotations.
+    """
     
     # 1. Convert output_base to a Path object for easier handling
     base_path = Path(output_base)
@@ -470,14 +514,43 @@ def display_offsets(output_base, summary_df):
 
 def apply_wcs_shift(input_file, dra_arcsec, ddec_arcsec, output_file=None):
     """
-    Applies an astrometric shift to a FITS file.
+    Applies a systematic astrometric shift to the WCS of a JWST FITS file.
+
+    This function calculates the coordinate shift in degrees, incorporating a 
+    cosine declination correction to ensure physical accuracy. It updates the 
+    CRVAL1 and CRVAL2 keywords in both the Primary and SCI headers. 
     
-    Args:
-        input_file (str): Path to original FITS.
-        dra_arcsec (float): RA shift (arcsec).
-        ddec_arcsec (float): Dec shift (arcsec).
-        output_file (str, optional): If provided, saves a copy here. 
-                                     If None, updates input_file in-place.
+    The function is 'idempotent': it checks for the 'ASTRO_COR' keyword and 
+    will skip files that have already been corrected to prevent double-shifting.
+
+    Parameters
+    ----------
+    input_file : str or Path
+        Path to the original Stage 3 JWST FITS mosaic (e.g. an i2d.fits file).
+    dra_arcsec : float
+        The systematic RA offset to subtract, measured in arcseconds on the sky.
+    ddec_arcsec : float
+        The systematic Dec offset to subtract, measured in arcseconds.
+    output_file : str or Path, optional
+        If provided, the original file is copied to this path before shifting.
+        If None (default), the function performs an 'in-place' update on the 
+        input_file. Use with caution.
+
+    Returns
+    -------
+    None
+        The FITS file is updated with:
+        1. Shifted CRVAL1/2 coordinates.
+        2. A 'HISTORY' entry detailing the specific dRA/dDec applied.
+        3. 'ASTRO_COR = True' added to the header as a completion flag.
+
+    Notes
+    -----
+    The RA correction is calculated as:
+    delta_RA_deg = (dra_arcsec / 3600.0) / cos(Declination)
+    
+    This ensures that the applied coordinate shift accounts for the 
+    convergence of longitudinal lines toward the poles.
     """
     target_file = input_file
     if output_file and output_file != input_file:
